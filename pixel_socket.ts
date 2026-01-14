@@ -84,11 +84,7 @@ export class PixelSocket {
                 );
                 this.options.onDisconnect(event.code, event.reason);
 
-                if (
-                    this.shouldReconnect &&
-                    this.options.autoReconnect &&
-                    this.stats.reconnectAttempts < this.options.maxReconnectAttempts
-                ) {
+                if (this.shouldReconnect && this.options.autoReconnect) {
                     this.scheduleReconnect();
                 }
             };
@@ -320,15 +316,25 @@ export class PixelSocket {
         }
 
         this.stats.reconnectAttempts++;
+
+        // Determine delay: use reconnectDelay until maxReconnectAttempts, then use 60 seconds
+        const delay = this.stats.reconnectAttempts <= this.options.maxReconnectAttempts
+            ? this.options.reconnectDelay
+            : 60000; // 1 minute after maxReconnectAttempts
+
+        const attemptText = this.stats.reconnectAttempts <= this.options.maxReconnectAttempts
+            ? `attempt ${this.stats.reconnectAttempts}/${this.options.maxReconnectAttempts}`
+            : `attempt ${this.stats.reconnectAttempts} (ongoing)`;
+
         console.log(
-            `[PixelSocket] Reconnecting in ${this.options.reconnectDelay}ms (attempt ${this.stats.reconnectAttempts}/${this.options.maxReconnectAttempts})`,
+            `[PixelSocket] Reconnecting in ${delay}ms (${attemptText})`,
         );
 
         this.reconnectTimeout = setTimeout(() => {
             this.connect().catch((error) => {
                 console.error("[PixelSocket] Reconnection failed:", error);
             });
-        }, this.options.reconnectDelay);
+        }, delay);
     }
 
     /**

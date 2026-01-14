@@ -42,6 +42,7 @@ export class PixelSocket {
      */
     async connect(): Promise<void> {
         try {
+            console.log(`[PixelSocket] Connecting to: ${this.options.url}`);
             this.socket = new WebSocket(this.options.url);
             this.socket.binaryType = "arraybuffer";
 

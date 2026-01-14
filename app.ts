@@ -1,9 +1,9 @@
 import { PixelSocket } from "./pixel_socket.ts";
-import { load } from "https://deno.land/std@0.208.0/dotenv/mod.ts";
 
-const env = await load();
-const url = env.PIXEL_SOCKET_URL || "wss://vite-based-comfyui-web-interface/ws/streaming";
-const saveDirectory = env.SAVE_DIRECTORY || "./images";
+const url = "__PIXEL_SOCKET_URL__";
+const saveDirectory = "__SAVE_DIRECTORY__";
+console.log("[Config] Using URL:", url);
+console.log("[Config] Using save directory:", saveDirectory);
 
 const client = new PixelSocket({
     url,

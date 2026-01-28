@@ -8,9 +8,6 @@ console.log("[Config] Using save directory:", saveDirectory);
 const client = new PixelSocket({
     url,
     saveDirectory,
-    onImage: (imageData, metadata) => {
-        console.log(`Received image: ${imageData.length} bytes`);
-    },
     onConnect: () => {
         console.log("Connected to WebSocket server");
     },

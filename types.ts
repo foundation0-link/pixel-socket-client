@@ -32,11 +32,6 @@ export interface PixelSocketOptions {
     maxReconnectAttempts?: number;
 
     /**
-     * Callback function when an image is received
-     */
-    onImage?: (imageData: Uint8Array, metadata?: ImageMetadata) => void;
-
-    /**
      * Callback function when connection is established
      */
     onConnect?: () => void;
@@ -50,85 +45,6 @@ export interface PixelSocketOptions {
      * Callback function when an error occurs
      */
     onError?: (error: Error) => void;
-}
-
-/**
- * Metadata associated with received images
- */
-export interface ImageMetadata {
-    /**
-     * Timestamp when the image was received
-     */
-    timestamp: Date;
-
-    /**
-     * Image format/type (e.g., 'jpeg', 'png', 'webp')
-     */
-    format?: string;
-
-    /**
-     * Image dimensions
-     */
-    width?: number;
-    height?: number;
-
-    /**
-     * MIME type of the image
-     */
-    mimeType?: string;
-
-    /**
-     * Original filename if provided
-     */
-    filename?: string;
-
-    /**
-     * Generation parameters (for AI-generated images)
-     */
-    params?: {
-        positivePrompt?: string;
-        negativePrompt?: string;
-        seed?: string;
-        width?: number;
-        height?: number;
-        workflowName?: string;
-        [key: string]: unknown;
-    };
-
-    /**
-     * Additional custom metadata
-     */
-    [key: string]: unknown;
-}
-
-/**
- * WebSocket message structure for image-generated events
- */
-export interface ImageGeneratedMessage {
-    type: "image-generated";
-    data: {
-        mode: string;
-        promptId: string;
-        base64Data: string;
-        mimeType: string;
-        imageInfo: {
-            filename: string;
-            subfolder: string;
-            type: string;
-        };
-        params?: {
-            positivePrompt?: string;
-            negativePrompt?: string;
-            seed?: string;
-            width?: number;
-            height?: number;
-            workflowName?: string;
-            [key: string]: unknown;
-        };
-        imageIdx: number;
-        imageLength: number;
-        timestamp: number;
-    };
 }
 
 /**
@@ -159,4 +75,19 @@ export interface ConnectionStats {
      * Number of reconnection attempts
      */
     reconnectAttempts: number;
+}
+
+/**
+ * ComfyUI(Pixel Socket) からの通知メッセージ
+ */
+export interface NotificationFromPixelSocket {
+    jobId: string;
+    blobData: Uint8Array | null;
+    imageLength: number;
+    fileExtension: string;
+    mimeType: string;
+    objectUrl: string | null; // Object Storageに保管されている場合に付与
+    secretToken: string;
+    timestamp: number;
+    promptParams?: [key: string, value: any][]; // 任意のプロンプトパラメータ
 }

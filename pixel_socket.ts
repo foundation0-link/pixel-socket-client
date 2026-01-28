@@ -1,9 +1,10 @@
 import type {
     ConnectionStats,
-    ImageGeneratedMessage,
-    ImageMetadata,
+    NotificationFromPixelSocket,
     PixelSocketOptions,
 } from "./types.ts";
+import { init as zstdInit, decompress as zstdDecompress } from "@bokuweb/zstd-wasm";
+import { decode as msgpackDecode } from "@msgpack/msgpack";
 
 /**
  * PixelSocket - A WebSocket client for collecting image streams
@@ -15,14 +16,14 @@ export class PixelSocket {
     private reconnectTimeout: number | null = null;
     private pingTimeout: number | null = null;
     private shouldReconnect = true;
+    private zstdInitialized = false;
 
     constructor(options: PixelSocketOptions) {
         this.options = {
             autoReconnect: true,
             reconnectDelay: 5000,
             maxReconnectAttempts: 10,
-            saveDirectory: "./images", // More explicit default directory name
-            onImage: () => { },
+            saveDirectory: "./received_images", // More explicit default directory name
             onConnect: () => { },
             onDisconnect: () => { },
             onError: () => { },
@@ -103,37 +104,18 @@ export class PixelSocket {
     private async handleMessage(event: MessageEvent): Promise<void> {
         try {
             if (event.data instanceof ArrayBuffer) {
-                // Binary data - treat as image
-                const imageData = new Uint8Array(event.data);
-                await this.processImage(imageData);
-            } else if (typeof event.data === "string") {
-                // Text data - parse JSON message
-                try {
-                    const parsed = JSON.parse(event.data);
+                const object = await this.decompressAndUnpack(event.data);
 
-                    if (parsed.type === "image-generated" && parsed.data) {
-                        // Validate the message structure before processing
-                        if (this.isValidImageGeneratedMessage(parsed)) {
-                            await this.handleImageGeneratedMessage(parsed as ImageGeneratedMessage);
-                        } else {
-                            console.warn("[PixelSocket] Received invalid image-generated message structure");
-                        }
-                    } else if (parsed.image && parsed.metadata) {
-                        // Legacy format: Image data with metadata in JSON format
-                        const imageData = this.base64ToUint8Array(parsed.image);
-                        await this.processImage(imageData, parsed.metadata);
-                    } else {
-                        console.log("[PixelSocket] Received message:", parsed);
-                    }
-                } catch (parseError) {
-                    // Not JSON, might be base64 encoded image
-                    console.log("[PixelSocket] Message is not JSON, attempting base64 decode");
-                    try {
-                        const imageData = this.base64ToUint8Array(event.data);
-                        await this.processImage(imageData);
-                    } catch (decodeError) {
-                        console.error("[PixelSocket] Failed to decode message:", decodeError);
-                    }
+                // デコード失敗時の処理
+                if (!object) {
+                    console.error('[Client] Failed to decompress or unpack message');
+                    return;
+                }
+
+                // Pixel Socketからのメッセージの処理
+                if (object.type === 'notification-from-pixel-socket') {
+                    const payload = object.payload as NotificationFromPixelSocket;
+                    await this.processImage(payload);
                 }
             }
         } catch (error) {
@@ -146,164 +128,36 @@ export class PixelSocket {
     }
 
     /**
-     * Validate image-generated message structure
-     */
-    private isValidImageGeneratedMessage(msg: unknown): boolean {
-        if (typeof msg !== "object" || msg === null) return false;
-
-        const message = msg as Record<string, unknown>;
-        if (message.type !== "image-generated") return false;
-
-        const data = message.data as Record<string, unknown>;
-        if (!data || typeof data !== "object") return false;
-
-        // Check required fields
-        return (
-            typeof data.base64Data === "string" &&
-            typeof data.mimeType === "string" &&
-            typeof data.timestamp === "number"
-        );
-    }
-
-    /**
-     * Handle image-generated message format
-     */
-    private async handleImageGeneratedMessage(
-        message: ImageGeneratedMessage,
-    ): Promise<void> {
-        const { data } = message;
-
-        // Decode base64 image data
-        const imageData = this.base64ToUint8Array(data.base64Data);
-
-        // Extract format from MIME type
-        const format = data.mimeType.split("/")[1] || "png";
-
-        // Build metadata object
-        const metadata: ImageMetadata = {
-            timestamp: new Date(data.timestamp || Date.now()),
-            format,
-            mimeType: data.mimeType,
-            filename: data.imageInfo?.filename,
-            width: data.params?.width,
-            height: data.params?.height,
-            params: data.params,
-            promptId: data.promptId,
-            imageIdx: data.imageIdx,
-            imageLength: data.imageLength,
-            mode: data.mode,
-        };
-
-        await this.processImage(imageData, metadata);
-    }
-
-    /**
      * Process received image data
      */
-    private async processImage(
-        imageData: Uint8Array,
-        metadata?: Partial<ImageMetadata>,
-    ): Promise<void> {
-        const fullMetadata: ImageMetadata = {
-            timestamp: new Date(),
-            ...metadata,
-        };
-
+    private async processImage(payload: NotificationFromPixelSocket): Promise<void> {
         this.stats.imagesReceived++;
-        this.stats.bytesReceived += imageData.length;
+        this.stats.bytesReceived += payload.imageLength;
 
         console.log(
-            `[PixelSocket] Received image #${this.stats.imagesReceived} (${imageData.length} bytes)`,
+            `[PixelSocket] Received image #${this.stats.imagesReceived} (${payload.imageLength} bytes)`,
         );
 
-        // Call user callback
-        this.options.onImage(imageData, fullMetadata);
-
         // Save to file if directory is specified
-        if (this.options.saveDirectory) {
-            await this.saveImage(imageData, fullMetadata);
-        }
-    }
+        if (this.options.saveDirectory && payload.blobData) {
+            try {
+                // Create directory if it doesn't exist
+                await Deno.mkdir(this.options.saveDirectory, { recursive: true });
 
-    /**
-     * Save image to disk
-     */
-    private async saveImage(
-        imageData: Uint8Array,
-        metadata: ImageMetadata,
-    ): Promise<void> {
-        try {
-            // Create directory if it doesn't exist
-            await Deno.mkdir(this.options.saveDirectory, { recursive: true });
+                // Generate filename based on timestamp
+                const timestamp = payload.timestamp || Date.now();
+                const filename = `${timestamp}_${payload.jobId}.${payload.fileExtension}`;
+                const filepath = `${this.options.saveDirectory}/${filename}`;
 
-            // Generate filename based on timestamp
-            const timestamp = metadata.timestamp.getTime();
-            const format = metadata.format || this.detectImageFormat(imageData);
-            const filename = `${timestamp}.${format}`;
-            const filepath = `${this.options.saveDirectory}/${filename}`;
-
-            await Deno.writeFile(filepath, imageData);
-            console.log(`[PixelSocket] Saved image to ${filepath}`);
-        } catch (error) {
-            const err = error instanceof Error
-                ? error
-                : new Error("Failed to save image");
-            console.error("[PixelSocket] Error saving image:", err);
-            this.options.onError(err);
-        }
-    }
-
-    /**
-     * Detect image format from binary data
-     */
-    private detectImageFormat(data: Uint8Array): string {
-        // Check magic bytes for common image formats
-        if (data[0] === 0xFF && data[1] === 0xD8 && data[2] === 0xFF) {
-            return "jpg";
-        }
-        if (
-            data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4E &&
-            data[3] === 0x47
-        ) {
-            return "png";
-        }
-        if (
-            data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 &&
-            data[3] === 0x46
-        ) {
-            return "webp";
-        }
-        if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) {
-            return "gif";
-        }
-        return "bin";
-    }
-
-    /**
-     * Convert base64 string to Uint8Array
-     */
-    private base64ToUint8Array(base64: string): Uint8Array {
-        try {
-            // Remove data URL prefix if present
-            const base64Data = base64.replace(/^data:image\/\w+;base64,/, "");
-
-            // Validate base64 string
-            if (!/^[A-Za-z0-9+/=]+$/.test(base64Data)) {
-                throw new Error("Invalid base64 string");
+                await Deno.writeFile(filepath, payload.blobData);
+                console.log(`[PixelSocket] Saved image to ${filepath}`);
+            } catch (error) {
+                const err = error instanceof Error
+                    ? error
+                    : new Error("Failed to save image");
+                console.error("[PixelSocket] Error saving image:", err);
+                this.options.onError(err);
             }
-
-            const binaryString = atob(base64Data);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
-            return bytes;
-        } catch (error) {
-            const err = error instanceof Error
-                ? error
-                : new Error("Failed to decode base64 data");
-            console.error("[PixelSocket] Base64 decode error:", err);
-            throw err;
         }
     }
 
@@ -400,5 +254,44 @@ export class PixelSocket {
      */
     isConnected(): boolean {
         return this.stats.isConnected;
+    }
+
+    /**
+     * Zstd初期化（1回のみ実行）
+     */
+    private async ensureZstdInit(): Promise<void> {
+        if (!this.zstdInitialized) {
+            try {
+                await zstdInit();
+                this.zstdInitialized = true;
+            } catch (err) {
+                console.error('[Zstd] Initialization failed:', err);
+                throw err;
+            }
+        }
+    }
+
+    /**
+     *  zstd展開 + unpack
+     * @param compressed
+     * @returns object | undefined
+     */
+    private async decompressAndUnpack(compressed: ArrayBuffer): Promise<any | undefined> {
+        try {
+            await this.ensureZstdInit();
+            const uint8Array = new Uint8Array(compressed);
+            const decompressed = zstdDecompress(uint8Array).slice();
+            return msgpackDecode(decompressed, {
+                rawStrings: false,
+                useBigInt64: true,
+            });
+        } catch (err) {
+            console.error("[decompressAndUnpack] Failed to decompress or unpack message:", {
+                error: err,
+                message: err instanceof Error ? err.message : String(err),
+                bufferSize: compressed.byteLength,
+            });
+        }
+        return undefined;
     }
 }

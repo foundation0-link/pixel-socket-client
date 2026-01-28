@@ -24,6 +24,7 @@ export class PixelSocket {
             reconnectDelay: 5000,
             maxReconnectAttempts: 10,
             saveDirectory: "./received_images", // More explicit default directory name
+            onImageReceived: () => { },
             onConnect: () => { },
             onDisconnect: () => { },
             onError: () => { },

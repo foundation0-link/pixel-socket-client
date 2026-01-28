@@ -20,7 +20,7 @@ deno compile \
     --icon pixel-socket.ico \
     --allow-net \
     --allow-read \
-    --allow-write="./images" \
+    --allow-write="./received_images" \
     app.tmp.ts
 
 # Clean up temporary file

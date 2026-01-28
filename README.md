@@ -24,10 +24,10 @@ A Deno TypeScript WebSocket client for collecting image streams from WebSocket s
 ```typescript
 import { PixelSocket } from "./pixel_socket.ts";
 const client = new PixelSocket({
-    url: "wss://vite-based-comfyui-web-interface/ws/streaming",
-    saveDirectory: "./images",
-    onImage: (imageData, metadata) => {
-        console.log(`Received image: ${imageData.length} bytes`);
+    url: "ws://your-pixel-socket-server/ws",
+    saveDirectory: "./received_images",
+    onImageReceived: (payload) => {
+        console.log(`Received image: ${payload.imageLength} bytes`);
     },
     onConnect: () => {
         console.log("Connected to WebSocket server");
@@ -47,13 +47,13 @@ interface PixelSocketOptions {
   url: string;                           // WebSocket server URL
 
   // Optional
-  saveDirectory?: string;                // Directory to save images (default: "./images")
+  saveDirectory?: string;                // Directory to save images (default: "./received_images")
   autoReconnect?: boolean;               // Auto-reconnect on disconnect (default: true)
   reconnectDelay?: number;               // Delay between reconnects in ms (default: 5000)
   maxReconnectAttempts?: number;         // Max reconnection attempts (default: 10)
   
   // Callbacks
-  onImage?: (data: Uint8Array, metadata?: ImageMetadata) => void;
+  onImageReceived?: (payload: NotificationFromPixelSocket) => void;
   onConnect?: () => void;
   onDisconnect?: (code: number, reason: string) => void;
   onError?: (error: Error) => void;
@@ -104,24 +104,18 @@ if (client.isConnected()) {
 
 ### Types
 
-#### `ImageMetadata`
+#### `NotificationFromPixelSocket`
 ```typescript
-interface ImageMetadata {
-  timestamp: Date;              // When the image was received
-  format?: string;              // Image format (png, jpg, webp, gif)
-  width?: number;               // Image width
-  height?: number;              // Image height
-  mimeType?: string;            // MIME type (e.g., "image/png")
-  filename?: string;            // Original filename if provided
-  params?: {                    // Generation parameters (for AI-generated images)
-    positivePrompt?: string;
-    negativePrompt?: string;
-    seed?: string;
-    width?: number;
-    height?: number;
-    workflowName?: string;
-  };
-  [key: string]: unknown;       // Custom metadata
+interface NotificationFromPixelSocket {
+  jobId: string;                // Unique job identifier
+  blobData: Uint8Array | null;  // Image binary data (null if stored in Object Storage)
+  imageLength: number;          // Size of image in bytes
+  fileExtension: string;        // File extension (png, jpg, webp, gif, etc.)
+  mimeType: string;             // MIME type (e.g., "image/png")
+  objectUrl: string | null;     // Object Storage URL (if applicable)
+  secretToken: string;          // Secret token for authentication
+  timestamp: number;            // Timestamp when image was received
+  promptParams?: [key: string, value: any][]; // Custom prompt parameters
 }
 ```
 
@@ -138,70 +132,62 @@ interface ConnectionStats {
 
 ## Advanced Usage
 
-### Understanding Message Formats
+### Understanding Message Format
 
-PixelSocket supports multiple message formats:
+PixelSocket receives messages in a binary format:
 
-1. **Binary data** - Raw image bytes (PNG, JPEG, etc.)
-2. **JSON with base64** - Image data encoded in JSON
-3. **Image-generated events** - Structured JSON messages from image generation services
+1. **Transport** - Binary WebSocket messages (ArrayBuffer)
+2. **Compression** - Zstandard (zstd) compression
+3. **Serialization** - MessagePack format
+4. **Content** - Notification messages containing image data and metadata
 
-#### Image-Generated Event Format
+#### Message Structure
 
-The WebSocket server at `wss://vite-based-comfyui-web-interface/ws/streaming` sends messages in this format:
+After decompression and unpacking, messages have this structure:
 
 ```json
 {
-  "type": "image-generated",
-  "data": {
-    "mode": "push",
-    "promptId": "1bb04031-05b4-4b80-9855-94de56e0cc72",
-    "base64Data": "{BASE64 IMAGE DATA}",
+  "type": "notification-from-pixel-socket",
+  "payload": {
+    "jobId": "550e8400-e29b-41d4-a716-446655440000",
+    "blobData": <binary data>,
+    "imageLength": 45678,
+    "fileExtension": "png",
     "mimeType": "image/png",
-    "imageInfo": {
-      "filename": "ComfyUI_00548_.png",
-      "subfolder": "",
-      "type": "output"
-    },
-    "params": {
-      "positivePrompt": "...",
-      "negativePrompt": "...",
-      "seed": "7419854775631041493",
-      "width": 1024,
-      "height": 1536,
-      "workflowName": "novaAnimeXL.json"
-    },
-    "imageIdx": 0,
-    "imageLength": 1,
-    "timestamp": 1768307710712
+    "objectUrl": null,
+    "secretToken": "token_xyz",
+    "timestamp": 1768307710712,
+    "promptParams": [["seed", "7419854775631041493"], ["width", 1024]]
   }
 }
 ```
 
-PixelSocket automatically handles this format and provides all metadata in the `onImage` callback.
+PixelSocket automatically handles decompression and unpacking, providing the payload in the `onImageReceived` callback.
 
 ### Custom Image Processing
 
 ```typescript
 const client = new PixelSocket({
-  url: "wss://vite-based-comfyui-web-interface/ws/streaming",
-  saveDirectory: "./images",
-  onImage: (imageData, metadata) => {
+  url: "ws://your-pixel-socket-server/ws",
+  saveDirectory: "./received_images",
+  onImageReceived: (payload) => {
     // Custom processing
-    if (imageData.length > 10000) {
+    if (payload.imageLength > 10000) {
       console.log("Large image received!");
       // Process large images differently
     }
     
-    // Access metadata
-    console.log(`Format: ${metadata?.format}`);
-    console.log(`Timestamp: ${metadata?.timestamp}`);
+    // Access payload data
+    console.log(`Format: ${payload.fileExtension}`);
+    console.log(`MIME type: ${payload.mimeType}`);
+    console.log(`Timestamp: ${payload.timestamp}`);
+    console.log(`Job ID: ${payload.jobId}`);
     
     // Access generation parameters (if available)
-    if (metadata?.params) {
-      console.log(`Workflow: ${metadata.params.workflowName}`);
-      console.log(`Seed: ${metadata.params.seed}`);
-      console.log(`Prompt: ${metadata.params.positivePrompt}`);
+    if (payload.promptParams) {
+      const params = Object.fromEntries(payload.promptParams);
+      console.log(`Seed: ${params.seed}`);
+      console.log(`Width: ${params.width}`);
     }
   },
 });
@@ -211,7 +197,7 @@ const client = new PixelSocket({
 
 ```typescript
 const client = new PixelSocket({
-  url: "wss://vite-based-comfyui-web-interface/ws/streaming",
+  url: "ws://your-pixel-socket-server/ws",
   autoReconnect: true,
   reconnectDelay: 3000,
   maxReconnectAttempts: 5,
@@ -225,29 +211,30 @@ const client = new PixelSocket({
 
 ```typescript
 const client = new PixelSocket({
-  url: "wss://vite-based-comfyui-web-interface/ws/streaming",
+  url: "ws://your-pixel-socket-server/ws",
   onConnect: () => {
-    // Send a message when connected
-    client.send(JSON.stringify({ action: "start_stream" }));
+    // Send a subscription message when connected
+    client.send(JSON.stringify({ type: "subscribe", mode: "all" }));
   },
 });
 ```
 
 ## Image Format Support
 
-PixelSocket automatically detects the following image formats:
+PixelSocket supports various image formats through the `fileExtension` field in the notification payload:
 - **PNG** - Portable Network Graphics
 - **JPEG/JPG** - Joint Photographic Experts Group
 - **WebP** - Web Picture format
 - **GIF** - Graphics Interchange Format
+- And other image formats supported by the server
 
-Images are saved with the appropriate file extension based on their detected format.
+Images are saved with the file extension provided by the server in the format: `{timestamp}_{jobId}.{fileExtension}`
 
 ## Error Handling
 
 ```typescript
 const client = new PixelSocket({
-  url: "wss://vite-based-comfyui-web-interface/ws/streaming",
+  url: "ws://your-pixel-socket-server/ws",
   onError: (error) => {
     console.error(`Error occurred: ${error.message}`);
     // Handle error appropriately

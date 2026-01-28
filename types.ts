@@ -32,6 +32,11 @@ export interface PixelSocketOptions {
     maxReconnectAttempts?: number;
 
     /**
+     * Callback function when an image is received
+     */
+    onImageReceived?: (payload: NotificationFromPixelSocket) => void;
+
+    /**
      * Callback function when connection is established
      */
     onConnect?: () => void;

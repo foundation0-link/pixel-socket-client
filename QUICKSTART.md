@@ -6,38 +6,43 @@ Ensure you have [Deno](https://deno.land/) installed (v1.30.0 or higher).
 
 ## Usage
 
-### Option 1: Connect to the Ultimate Battle WebSocket Server
+### Option 1: Configure Connection Settings
 
 ```bash
-# Basic example - connects to wss://vite-based-comfyui-web-interface/ws/broadcast
-deno run --allow-net --allow-write examples/basic.ts
+# Copy the example configuration
+cp .env.example .env
 
-# Advanced example with detailed statistics
-deno run --allow-net --allow-write examples/advanced.ts
+# Edit .env with your server settings
+editor .env
 ```
 
-### Option 2: Connect to a Custom WebSocket Server
+### Option 2: Run the Application
 
 ```bash
-# Pass a custom WebSocket URL as an argument
-deno run --allow-net --allow-write examples/basic.ts ws://your-server.com/ws
+# Run with Deno (requires --allow-net and --allow-write permissions)
+deno run --allow-net --allow-write app.ts
 ```
 
 ### Option 3: Use in Your Own Code
 
 ```typescript
-import { PixelSocket } from "https://raw.githubusercontent.com/0nyx-networks/pixel-socket/main/mod.ts";
+import { PixelSocket } from "./pixel_socket.ts";
 
 const client = new PixelSocket({
-  url: "wss://vite-based-comfyui-web-interface/ws/broadcast",
-  saveDirectory: "./my_images",
-  onImage: (imageData, metadata) => {
-    console.log(`Image received: ${imageData.length} bytes`);
+  url: "ws://your-pixel-socket-server/ws",
+  saveDirectory: "./received_images",
+  onImageReceived: (payload) => {
+    console.log(`Image received: ${payload.imageLength} bytes`);
     
-    // Access metadata
-    if (metadata?.params) {
-      console.log(`Workflow: ${metadata.params.workflowName}`);
-      console.log(`Dimensions: ${metadata.width}x${metadata.height}`);
+    // Access payload data
+    console.log(`Job ID: ${payload.jobId}`);
+    console.log(`Format: ${payload.fileExtension}`);
+    console.log(`Timestamp: ${payload.timestamp}`);
+    
+    // Access custom parameters
+    if (payload.promptParams) {
+      const params = Object.fromEntries(payload.promptParams);
+      console.log(`Parameters:`, params);
     }
   },
 });
@@ -47,43 +52,40 @@ await client.connect();
 
 ## What Gets Saved?
 
-Images are automatically saved to the `saveDirectory` with filenames based on timestamps:
+Images are automatically saved to the `saveDirectory` with filenames based on timestamp and job ID:
 
 ```
 ./received_images/
-  ├── 1768307710712.png
-  ├── 1768307720834.png
-  └── 1768307730956.png
+  ├── 1768307710712_550e8400-e29b-41d4-a716-446655440000.png
+  ├── 1768307720834_4a4ac21c-8c41-4f09-9a79-e2e5d3b74c8f.png
+  └── 1768307730956_7f5d6c3e-2b1a-4e8c-9d6e-5f4c3b2a1d0e.png
 ```
 
 ## Message Format
 
-The WebSocket server sends JSON messages with this structure:
+The WebSocket server sends binary messages (Zstandard-compressed MessagePack) with this structure:
 
 ```json
 {
-  "type": "image-generated",
-  "data": {
-    "base64Data": "...",
+  "type": "notification-from-pixel-socket",
+  "payload": {
+    "jobId": "550e8400-e29b-41d4-a716-446655440000",
+    "blobData": <binary image data>,
+    "imageLength": 45678,
+    "fileExtension": "png",
     "mimeType": "image/png",
-    "imageInfo": {
-      "filename": "ComfyUI_00548_.png"
-    },
-    "params": {
-      "positivePrompt": "...",
-      "seed": "7419854775631041493",
-      "width": 1024,
-      "height": 1536,
-      "workflowName": "novaAnimeXL.json"
-    },
-    "timestamp": 1768307710712
+    "objectUrl": null,
+    "secretToken": "token_xyz",
+    "timestamp": 1768307710712,
+    "promptParams": [["seed", "7419854775631041493"], ["width", 1024], ["workflowName", "novaAnimeXL.json"]]
   }
 }
 ```
 
 PixelSocket automatically:
-- Decodes the base64 image data
-- Extracts metadata and generation parameters
+- Decompresses Zstandard-compressed data
+- Unpacks MessagePack format
+- Extracts image binary data and metadata
 - Saves images with proper file extensions
 - Provides all information in callbacks
 
@@ -93,11 +95,15 @@ PixelSocket automatically:
 
 ```typescript
 const client = new PixelSocket({
-  url: "wss://vite-based-comfyui-web-interface/ws/broadcast",
+  url: "ws://your-pixel-socket-server/ws",
   saveDirectory: "./ai_images",
-  onImage: (imageData, metadata) => {
-    console.log(`New AI image: ${metadata?.filename}`);
-    console.log(`Generated with: ${metadata?.params?.workflowName}`);
+  onImageReceived: (payload) => {
+    console.log(`New image received: ${payload.jobId}`);
+    
+    if (payload.promptParams) {
+      const params = Object.fromEntries(payload.promptParams);
+      console.log(`Workflow: ${params.workflowName}`);
+    }
   },
 });
 ```
@@ -106,9 +112,9 @@ const client = new PixelSocket({
 
 ```typescript
 const client = new PixelSocket({
-  url: "wss://vite-based-comfyui-web-interface/ws/broadcast",
-  onImage: (imageData, metadata) => {
-    if (imageData.length > 100000) {
+  url: "ws://your-pixel-socket-server/ws",
+  onImageReceived: (payload) => {
+    if (payload.imageLength > 100000) {
       console.log("Large high-quality image received!");
     }
   },
@@ -119,12 +125,14 @@ const client = new PixelSocket({
 
 ```typescript
 const client = new PixelSocket({
-  url: "wss://vite-based-comfyui-web-interface/ws/broadcast",
-  saveDirectory: null, // Don't auto-save
-  onImage: async (imageData, metadata) => {
-    // Custom processing
-    await processWithML(imageData);
-    await uploadToCloud(imageData, metadata);
+  url: "ws://your-pixel-socket-server/ws",
+  saveDirectory: undefined, // Don't auto-save to disk
+  onImageReceived: async (payload) => {
+    if (payload.blobData) {
+      // Custom processing
+      await processWithML(payload.blobData);
+      await uploadToCloud(payload.blobData, payload);
+    }
   },
 });
 ```
